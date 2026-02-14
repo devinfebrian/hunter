@@ -1,0 +1,13 @@
+# Example scope file for Hunter
+# Lines starting with # are comments
+# Prefix with - for out-of-scope
+
+# In-scope
+*.example.com
+example.com
+api.example.com
+
+# Out-of-scope
+- admin.example.com
+- *.internal.example.com
+- *.prod.example.com
