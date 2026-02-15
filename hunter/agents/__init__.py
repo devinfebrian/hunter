@@ -1,3 +1,7 @@
-from .sqli_agent import SQLiAgent
+"""Hunter Agents Module"""
 
-__all__ = ["SQLiAgent"]
+from .base import BaseAgent
+from .sqli import SQLiAgent
+from .xss import XSSAgent
+
+__all__ = ["BaseAgent", "SQLiAgent", "XSSAgent"]

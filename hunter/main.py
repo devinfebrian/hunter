@@ -15,13 +15,9 @@ from hunter.models import Target, ScopeRule, ScanSession, Endpoint
 from hunter.config import settings
 from hunter.recon.subdomain import SubdomainEnumerator
 from hunter.recon.probe import HTTPProber
-# Try to import browser-based agent, fallback to basic
-try:
-    from hunter.agents.browser_sqli_agent import BrowserSQLiAgent
-    BROWSER_AVAILABLE = True
-except ImportError:
-    BROWSER_AVAILABLE = False
-    from hunter.agents.sqli_agent import SQLiAgent as BrowserSQLiAgent
+# Import agents
+from hunter.agents.sqli import SQLiAgent
+from hunter.agents.xss import XSSAgent
 from hunter.report.markdown import MarkdownReporter
 
 # Setup logging
@@ -97,13 +93,17 @@ def scan(
         False, "--recon-only",
         help="Only run reconnaissance, skip vulnerability testing"
     ),
+    agents: Optional[str] = typer.Option(
+        "sqli,xss", "--agents", "-a",
+        help="Comma-separated list of agents to run (sqli,xss)"
+    ),
 ):
     """Run a security scan against a target"""
     
     # Show banner
     console.print(Panel.fit(
         "[bold cyan]Hunter[/bold cyan] - Autonomous Bug Bounty Agent\n"
-        "[dim]SQL Injection Detection | Safe by Default | Production Ready[/dim]",
+        "[dim]SQLi & XSS Detection | Safe by Default | Production Ready[/dim]",
         border_style="cyan"
     ))
     
@@ -127,15 +127,18 @@ def scan(
         scope_rules=scope_rules
     )
     
+    # Parse agents
+    agent_list = [a.strip().lower() for a in agents.split(",")] if agents else ["sqli"]
+    
     # Run scan
     try:
-        asyncio.run(_run_scan(target_obj, recon_only, max_time))
+        asyncio.run(_run_scan(target_obj, recon_only, max_time, agent_list))
     except KeyboardInterrupt:
         console.print("\n[yellow]Scan interrupted by user[/yellow]")
         raise typer.Exit(130)
 
 
-async def _run_scan(target: Target, recon_only: bool, max_time: int):
+async def _run_scan(target: Target, recon_only: bool, max_time: int, agents: List[str]):
     """Run the full scan workflow"""
     
     session = ScanSession(target=target)
@@ -172,7 +175,22 @@ async def _run_scan(target: Target, recon_only: bool, max_time: int):
         return
     
     # Stage 2: Vulnerability Analysis
-    console.print("\n[bold]Starting Autonomous SQL Injection Analysis...[/bold]\n")
+    console.print(f"\n[bold]Starting Vulnerability Analysis...[/bold]")
+    console.print(f"[dim]Agents: {', '.join(agents)}[/dim]\n")
+    
+    # Run each agent
+    for agent_name in agents:
+        if agent_name == "sqli":
+            await _run_sqli_agent(endpoints, session)
+        elif agent_name == "xss":
+            await _run_xss_agent(endpoints, session)
+        else:
+            console.print(f"[yellow]Unknown agent: {agent_name}[/yellow]")
+
+
+async def _run_sqli_agent(endpoints: List[Endpoint], session: ScanSession):
+    """Run SQL Injection agent"""
+    console.print("[cyan]Running SQL Injection tests...[/cyan]")
     
     with Progress(
         SpinnerColumn(),
@@ -180,30 +198,54 @@ async def _run_scan(target: Target, recon_only: bool, max_time: int):
         console=console
     ) as progress:
         
-        task = progress.add_task("Initializing agent...", total=len(endpoints))
-        
-        # Use browser-based agent for better form interaction
-        if BROWSER_AVAILABLE:
-            console.print("[cyan]Using browser automation for form testing...[/cyan]")
-            console.print("[dim]Note: Install Playwright browsers with: playwright install chromium[/dim]\n")
+        task = progress.add_task("SQLi testing...", total=len(endpoints))
         
         try:
-            async with BrowserSQLiAgent() as agent:
-                for endpoint in endpoints[:5]:  # Test first 5 endpoints
-                    progress.update(task, description=f"Analyzing {endpoint.url[:60]}...")
+            async with SQLiAgent() as agent:
+                for endpoint in endpoints[:5]:
+                    progress.update(task, description=f"SQLi: {endpoint.url[:50]}...")
                     
                     try:
                         findings = await agent.analyze(endpoint)
                         for finding in findings:
                             session.add_finding(finding)
                     except Exception as e:
-                        logger.error(f"Error analyzing {endpoint.url}: {e}")
+                        logger.error(f"SQLi error: {e}")
                     
                     progress.advance(task)
         except Exception as e:
-            logger.error(f"Browser agent failed: {e}")
-            console.print(f"[yellow]Browser automation error: {e}[/yellow]")
-            console.print("[yellow]Try running: playwright install chromium[/yellow]")
+            logger.error(f"SQLi agent failed: {e}")
+            console.print(f"[yellow]SQLi agent error: {e}[/yellow]")
+
+
+async def _run_xss_agent(endpoints: List[Endpoint], session: ScanSession):
+    """Run XSS agent"""
+    console.print("[cyan]Running XSS tests...[/cyan]")
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console
+    ) as progress:
+        
+        task = progress.add_task("XSS testing...", total=len(endpoints))
+        
+        try:
+            async with XSSAgent() as agent:
+                for endpoint in endpoints[:5]:
+                    progress.update(task, description=f"XSS: {endpoint.url[:50]}...")
+                    
+                    try:
+                        findings = await agent.analyze(endpoint)
+                        for finding in findings:
+                            session.add_finding(finding)
+                    except Exception as e:
+                        logger.error(f"XSS error: {e}")
+                    
+                    progress.advance(task)
+        except Exception as e:
+            logger.error(f"XSS agent failed: {e}")
+            console.print(f"[yellow]XSS agent error: {e}[/yellow]")
     
     # Stage 3: Reporting
     session.end_time = __import__('datetime').datetime.utcnow()
