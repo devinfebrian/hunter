@@ -187,6 +187,8 @@ class XSSAgent(BaseAgent):
     async def _submit_and_check(self, form_url: str, form, input_field: Dict,
                                 payload: str) -> Optional[Finding]:
         """Submit form with payload and check for XSS"""
+        from playwright.async_api import Error as PlaywrightError
+        
         field_name = input_field['name']
         
         page = None
@@ -195,7 +197,16 @@ class XSSAgent(BaseAgent):
             await self.rate_limiter.acquire()
             
             # Load fresh page (navigate to form page) - use shorter timeout
-            await page.goto(form_url, wait_until="domcontentloaded", timeout=15000)
+            try:
+                await page.goto(form_url, wait_until="domcontentloaded", timeout=15000)
+            except PlaywrightError as e:
+                # Handle navigation errors (ERR_ABORTED, timeout, etc.)
+                error_msg = str(e).lower()
+                if 'err_aborted' in error_msg or 'net::' in error_msg:
+                    logger.debug(f"Navigation aborted for {form_url}: {e}")
+                else:
+                    logger.debug(f"Navigation error for {form_url}: {e}")
+                return None
             
             # Prepare field values
             field_values = {field_name: payload}
