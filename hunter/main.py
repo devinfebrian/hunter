@@ -18,6 +18,7 @@ from hunter.recon.probe import HTTPProber
 # Import agents
 from hunter.agents.sqli import SQLiAgent
 from hunter.agents.xss import XSSAgent
+from hunter.agents.coordinator import ScanCoordinator
 from hunter.report.markdown import MarkdownReporter
 
 # Setup logging
@@ -178,17 +179,20 @@ async def _run_scan(target: Target, recon_only: bool, max_time: int, agents: Lis
     console.print(f"\n[bold]Starting Vulnerability Analysis...[/bold]")
     console.print(f"[dim]Agents: {', '.join(agents)}[/dim]\n")
     
-    # Run each agent
+    # Create shared coordinator to prevent redundant testing
+    coordinator = ScanCoordinator()
+    
+    # Run each agent (SQLi first - it finds higher impact vulns)
     for agent_name in agents:
         if agent_name == "sqli":
-            await _run_sqli_agent(endpoints, session)
+            await _run_sqli_agent(endpoints, session, coordinator)
         elif agent_name == "xss":
-            await _run_xss_agent(endpoints, session)
+            await _run_xss_agent(endpoints, session, coordinator)
         else:
             console.print(f"[yellow]Unknown agent: {agent_name}[/yellow]")
 
 
-async def _run_sqli_agent(endpoints: List[Endpoint], session: ScanSession):
+async def _run_sqli_agent(endpoints: List[Endpoint], session: ScanSession, coordinator: ScanCoordinator):
     """Run SQL Injection agent"""
     console.print("[cyan]Running SQL Injection tests...[/cyan]")
     
@@ -201,7 +205,7 @@ async def _run_sqli_agent(endpoints: List[Endpoint], session: ScanSession):
         task = progress.add_task("SQLi testing...", total=len(endpoints))
         
         try:
-            async with SQLiAgent() as agent:
+            async with SQLiAgent(coordinator) as agent:
                 for endpoint in endpoints[:5]:
                     progress.update(task, description=f"SQLi: {endpoint.url[:50]}...")
                     
@@ -218,8 +222,13 @@ async def _run_sqli_agent(endpoints: List[Endpoint], session: ScanSession):
             console.print(f"[yellow]SQLi agent error: {e}[/yellow]")
 
 
-async def _run_xss_agent(endpoints: List[Endpoint], session: ScanSession):
+async def _run_xss_agent(endpoints: List[Endpoint], session: ScanSession, coordinator: ScanCoordinator):
     """Run XSS agent"""
+    # Show what parameters will be skipped
+    skip_summary = coordinator.get_skip_summary()
+    if "No parameters" not in skip_summary:
+        console.print(f"[dim]{skip_summary}[/dim]")
+    
     console.print("[cyan]Running XSS tests...[/cyan]")
     
     with Progress(
@@ -231,7 +240,7 @@ async def _run_xss_agent(endpoints: List[Endpoint], session: ScanSession):
         task = progress.add_task("XSS testing...", total=len(endpoints))
         
         try:
-            async with XSSAgent() as agent:
+            async with XSSAgent(coordinator) as agent:
                 for endpoint in endpoints[:5]:
                     progress.update(task, description=f"XSS: {endpoint.url[:50]}...")
                     

@@ -9,6 +9,7 @@ from urllib.parse import urljoin
 from hunter.models import Endpoint, Finding
 from hunter.safety.controller import SafetyController
 from hunter.config import settings
+from hunter.agents.coordinator import ScanCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +34,13 @@ class BaseAgent(ABC):
     """Abstract base class for all vulnerability detection agents"""
     
     NAME: str = "base_agent"
+    VULN_TYPE: str = "unknown"  # Override in subclasses: 'sqli', 'xss', etc.
     
-    def __init__(self):
+    def __init__(self, coordinator: Optional[ScanCoordinator] = None):
         self.safety = SafetyController()
         self.rate_limiter = RateLimiter()
         self.findings: List[Finding] = []
+        self.coordinator = coordinator  # Shared coordinator to skip tested params
     
     async def __aenter__(self):
         """Async context manager entry"""
@@ -104,6 +107,11 @@ class BaseAgent(ABC):
         finding.status = "confirmed"
         finding.discovered_by = self.NAME
         self.findings.append(finding)
+        
+        # Mark as tested in coordinator so other agents skip this parameter
+        if self.coordinator and finding.parameter:
+            self.coordinator.mark_tested(finding.url, finding.parameter, self.VULN_TYPE)
+        
         logger.info(f"[CONFIRMED] {finding.title}")
         return True
     
@@ -112,3 +120,12 @@ class BaseAgent(ABC):
         if path.startswith(('http://', 'https://')):
             return path
         return urljoin(base_url, path)
+    
+    def _should_skip_param(self, url: str, parameter: str) -> bool:
+        """Check if this parameter should be skipped (already tested by another agent)"""
+        if not self.coordinator:
+            return False
+        if self.coordinator.is_tested(url, parameter):
+            logger.debug(f"Skipping {parameter} - already tested by another agent")
+            return True
+        return False

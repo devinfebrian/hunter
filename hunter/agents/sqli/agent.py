@@ -21,9 +21,10 @@ class SQLiAgent(BaseAgent):
     """Browser-based SQL Injection detection agent"""
     
     NAME = "sqli_agent"
+    VULN_TYPE = "sqli"
     
-    def __init__(self):
-        super().__init__()
+    def __init__(self, coordinator=None):
+        super().__init__(coordinator)
         self.crawler: Optional[BrowserCrawler] = None
         self.detector = SQLiDetector()
         self.browser: Optional[Browser] = None
@@ -64,10 +65,16 @@ class SQLiAgent(BaseAgent):
         if not params:
             return
         
-        logger.info(f"Testing {len(params)} URL parameter(s): {list(params.keys())}")
+        # Filter out already-tested parameters
+        untested_params = [p for p in params.keys() if not self._should_skip_param(url, p)]
+        if not untested_params:
+            logger.info(f"All URL parameters already tested by other agents, skipping")
+            return
+        
+        logger.info(f"Testing {len(untested_params)} URL parameter(s): {untested_params}")
         
         async with httpx.AsyncClient(follow_redirects=True, timeout=30, verify=False) as client:
-            for param_name in params.keys():
+            for param_name in untested_params:
                 await self._test_param_http(client, url, param_name, params)
     
     async def _test_param_http(self, client: httpx.AsyncClient, url: str, 
@@ -141,6 +148,10 @@ class SQLiAgent(BaseAgent):
         
         # Skip non-text fields
         if field_type not in ['text', 'email', 'search', 'password', '']:
+            return
+        
+        # Skip if already tested by another agent
+        if self._should_skip_param(form_url, field_name):
             return
         
         # Choose payloads based on field type
