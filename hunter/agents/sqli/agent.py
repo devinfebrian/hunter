@@ -152,23 +152,27 @@ class SQLiAgent(BaseAgent):
             payloads = get_payloads("error_based") + get_payloads("auth_bypass")
         
         for payload in payloads:
-            finding = await self._submit_and_check(form_url, form, input_field, payload)
-            if finding:
-                self._add_finding(finding)
-                return  # Found one, move to next field
+            try:
+                finding = await self._submit_and_check(form_url, form, input_field, payload)
+                if finding:
+                    self._add_finding(finding)
+                    return  # Found one, move to next field
+            except Exception as e:
+                logger.debug(f"Form test error for {field_name}: {e}")
+                continue
     
     async def _submit_and_check(self, form_url: str, form, input_field: Dict, 
                                 payload: str) -> Optional[Finding]:
         """Submit form with payload and check for vulnerabilities"""
         field_name = input_field['name']
         
-        page = await self.browser.new_page()
-        
+        page = None
         try:
+            page = await self.browser.new_page()
             await self.rate_limiter.acquire()
             
             # Load fresh page (navigate to form page)
-            await page.goto(form_url, wait_until="networkidle", timeout=30000)
+            await page.goto(form_url, wait_until="domcontentloaded", timeout=15000)
             
             # Prepare field values
             field_values = {field_name: payload}
@@ -225,7 +229,11 @@ class SQLiAgent(BaseAgent):
         except Exception as e:
             logger.debug(f"Form test error for '{field_name}': {e}")
         finally:
-            await page.close()
+            if page:
+                try:
+                    await page.close()
+                except:
+                    pass
         
         return None
     

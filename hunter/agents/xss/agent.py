@@ -164,23 +164,27 @@ class XSSAgent(BaseAgent):
                    get_payloads("event_handlers"))
         
         for payload in payloads:
-            finding = await self._submit_and_check(form_url, form, input_field, payload)
-            if finding:
-                self._add_finding(finding)
-                return
+            try:
+                finding = await self._submit_and_check(form_url, form, input_field, payload)
+                if finding:
+                    self._add_finding(finding)
+                    return
+            except Exception as e:
+                logger.debug(f"Form test error for {field_name}: {e}")
+                continue
     
     async def _submit_and_check(self, form_url: str, form, input_field: Dict,
                                 payload: str) -> Optional[Finding]:
         """Submit form with payload and check for XSS"""
         field_name = input_field['name']
         
-        page = await self.browser.new_page()
-        
+        page = None
         try:
+            page = await self.browser.new_page()
             await self.rate_limiter.acquire()
             
-            # Load fresh page (navigate to form page)
-            await page.goto(form_url, wait_until="networkidle", timeout=30000)
+            # Load fresh page (navigate to form page) - use shorter timeout
+            await page.goto(form_url, wait_until="domcontentloaded", timeout=15000)
             
             # Prepare field values
             field_values = {field_name: payload}
@@ -238,7 +242,11 @@ class XSSAgent(BaseAgent):
         except Exception as e:
             logger.debug(f"Form test error for '{field_name}': {e}")
         finally:
-            await page.close()
+            if page:
+                try:
+                    await page.close()
+                except:
+                    pass
         
         return None
     

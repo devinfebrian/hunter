@@ -283,16 +283,19 @@ class BrowserCrawler:
             # Last resort: press Enter in first field
             if not clicked and field_values:
                 first_field = list(field_values.keys())[0]
-                await page.press(f"[name='{first_field}']", "Enter")
+                try:
+                    await page.press(f"[name='{first_field}']", "Enter", timeout=5000)
+                except Exception as e:
+                    logger.debug(f"Could not press Enter in {first_field}: {e}")
             
-            # Wait for navigation
+            # Wait for navigation with shorter timeout
             try:
-                await page.wait_for_load_state("networkidle", timeout=5000)
+                await page.wait_for_load_state("networkidle", timeout=3000)
             except:
                 pass
             
             return page
             
         except Exception as e:
-            logger.error(f"Form submission error: {e}")
+            logger.debug(f"Form submission error: {e}")
             return None
