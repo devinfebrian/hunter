@@ -59,6 +59,25 @@ class BaseAgent(ABC):
         """Override for agent cleanup"""
         pass
     
+    async def reset_to_homepage(self, homepage_url: str) -> bool:
+        """Reset browser to homepage between agents
+        
+        Returns True if reset successful, False otherwise
+        """
+        if hasattr(self, 'browser') and self.browser:
+            try:
+                # Create new context/page for clean state
+                context = await self.browser.new_context()
+                page = await context.new_page()
+                await page.goto(homepage_url, wait_until="domcontentloaded", timeout=10000)
+                logger.info(f"Reset browser to homepage: {homepage_url}")
+                await page.close()
+                await context.close()
+                return True
+            except Exception as e:
+                logger.debug(f"Failed to reset to homepage: {e}")
+        return False
+    
     @abstractmethod
     async def analyze(self, endpoint: Endpoint) -> List[Finding]:
         """Analyze an endpoint for vulnerabilities"""

@@ -40,6 +40,7 @@ class SQLiAgent(BaseAgent):
         self.crawler = BrowserCrawler(delay=self.rate_limiter.delay)
         await self.crawler.__aenter__()
         self.browser = self.crawler.browser
+        logger.info(f"SQLiAgent: Fresh browser initialized (clean session)")
     
     async def _teardown(self):
         """Cleanup browser and crawler"""
