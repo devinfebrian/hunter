@@ -24,9 +24,9 @@ class SQLiAgent(BaseAgent):
     VULN_TYPE = "sqli"
     
     # Limits to prevent scan from taking too long
-    MAX_FORMS_PER_PAGE = 3      # Only test first 3 forms
-    MAX_FIELDS_PER_FORM = 4     # Only test first 4 text fields
-    MAX_PAYLOADS_PER_FIELD = 3  # Limit payloads (already optimized in payloads.py)
+    MAX_FORMS_PER_PAGE = 5      # Test first 5 forms
+    MAX_FIELDS_PER_FORM = 6     # Test first 6 text fields
+    # Note: Testing stops early if login consistently fails (detected by response text)
     
     def __init__(self, coordinator=None):
         super().__init__(coordinator)
@@ -180,12 +180,28 @@ class SQLiAgent(BaseAgent):
         else:
             payloads = get_payloads("error_based") + get_payloads("auth_bypass")
         
+        login_failed_count = 0
         for payload in payloads:
             try:
-                finding = await self._submit_and_check(form_url, form, input_field, payload)
-                if finding:
-                    self._add_finding(finding)
+                result = await self._submit_and_check(form_url, form, input_field, payload)
+                
+                # If result is a Finding, we found a vulnerability
+                if isinstance(result, Finding):
+                    self._add_finding(result)
                     return  # Found one, move to next field
+                
+                # If result is "LOGIN_FAILED", track it
+                if result == "LOGIN_FAILED":
+                    login_failed_count += 1
+                    # If 2 consecutive payloads show login failed, stop testing this field
+                    if login_failed_count >= 2:
+                        logger.debug(f"Login consistently failed for {field_name}, skipping remaining payloads")
+                        return
+                    continue
+                
+                # Reset counter on successful submission (no error, no failure message)
+                login_failed_count = 0
+                
             except Exception as e:
                 logger.debug(f"Form test error for {field_name}: {e}")
                 continue
@@ -265,6 +281,11 @@ class SQLiAgent(BaseAgent):
                     db_type=db_type,
                     method=form.method.upper()
                 )
+            
+            # Check 3: Login failure detection - stop testing if auth clearly failed
+            if self.detector.detect_login_failure(content):
+                logger.debug(f"Login failed for {field_name} with payload '{payload[:30]}...'")
+                return "LOGIN_FAILED"
             
         except Exception as e:
             logger.debug(f"Form test error for '{field_name}': {e}")

@@ -24,8 +24,8 @@ class XSSAgent(BaseAgent):
     VULN_TYPE = "xss"
     
     # Limits to prevent scan from taking too long
-    MAX_FORMS_PER_PAGE = 3      # Only test first 3 forms
-    MAX_FIELDS_PER_FORM = 4     # Only test first 4 text fields
+    MAX_FORMS_PER_PAGE = 5      # Test first 5 forms
+    MAX_FIELDS_PER_FORM = 6     # Test first 6 text fields
     
     def __init__(self, coordinator=None):
         super().__init__(coordinator)

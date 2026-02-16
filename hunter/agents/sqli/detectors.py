@@ -27,6 +27,36 @@ class SQLiDetector:
                     return db_type, content[start:end]
         return None, None
     
+    # Login failure indicators - if seen, stop testing this field
+    LOGIN_FAILURE_PATTERNS = [
+        r'login failed',
+        r'invalid username',
+        r'invalid password',
+        r'incorrect username',
+        r'incorrect password',
+        r'username and password do not match',
+        r'authentication failed',
+        r'access denied',
+        r'wrong password',
+        r'wrong username',
+        r'user not found',
+        r'account not found',
+        r'invalid credentials',
+        r'login incorrect',
+    ]
+    
+    @staticmethod
+    def detect_login_failure(content: str) -> bool:
+        """Detect if login clearly failed (to stop testing early)
+        
+        Returns True if login failure is detected, False otherwise
+        """
+        content_lower = content.lower()
+        for pattern in SQLiDetector.LOGIN_FAILURE_PATTERNS:
+            if re.search(pattern, content_lower):
+                return True
+        return False
+    
     @staticmethod
     async def detect_auth_success(page: Page, before_url: str, after_url: str) -> bool:
         """Detect if authentication was successful

