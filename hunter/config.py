@@ -19,8 +19,8 @@ class Settings(BaseSettings):
     kimi_base_url: str = Field(default="https://api.moonshot.cn/v1", description="Kimi API base URL")
     
     # Rate Limiting
-    max_requests_per_minute: int = Field(default=100, description="Max requests per minute")
-    delay_between_requests: float = Field(default=0.6, description="Delay between requests in seconds")
+    max_requests_per_minute: int = Field(default=120, description="Max requests per minute")
+    delay_between_requests: float = Field(default=0.3, description="Delay between requests in seconds")
     
     # Safety Settings
     safe_mode: bool = Field(default=True, description="Enable safe mode - no destructive operations")

@@ -23,6 +23,10 @@ class XSSAgent(BaseAgent):
     NAME = "xss_agent"
     VULN_TYPE = "xss"
     
+    # Limits to prevent scan from taking too long
+    MAX_FORMS_PER_PAGE = 3      # Only test first 3 forms
+    MAX_FIELDS_PER_FORM = 4     # Only test first 4 text fields
+    
     def __init__(self, coordinator=None):
         super().__init__(coordinator)
         self.crawler: Optional[BrowserCrawler] = None
@@ -119,12 +123,16 @@ class XSSAgent(BaseAgent):
                 logger.debug(f"Param test error: {e}")
     
     async def _test_page_forms(self, url: str) -> None:
-        """Test all forms on a page for XSS"""
+        """Test forms on a page (with limits)"""
         page_data = await self.crawler.crawl_page(url)
         if not page_data:
             return
         
-        for form in page_data.forms:
+        forms_to_test = page_data.forms[:self.MAX_FORMS_PER_PAGE]
+        if len(page_data.forms) > self.MAX_FORMS_PER_PAGE:
+            logger.info(f"Limiting to {self.MAX_FORMS_PER_PAGE} forms (found {len(page_data.forms)})")
+        
+        for form in forms_to_test:
             await self._test_form(url, form)
     
     async def _test_discovered_pages(self, base_url: str) -> None:
@@ -148,12 +156,20 @@ class XSSAgent(BaseAgent):
                 await self._test_page_forms(href)
     
     async def _test_form(self, base_url: str, form) -> None:
-        """Test a single form for XSS"""
+        """Test a single form for XSS (with field limits)"""
         form_url = self._resolve_url(base_url, form.action) if form.action else base_url
         
-        logger.info(f"Testing form: {form_url} ({form.method}) with {len(form.inputs)} field(s)")
+        # Count text fields only
+        text_fields = [f for f in form.inputs 
+                      if f.get('type', 'text') in ['text', 'email', 'search', 'password', 'textarea', '']]
         
-        for input_field in form.inputs:
+        fields_to_test = text_fields[:self.MAX_FIELDS_PER_FORM]
+        if len(text_fields) > self.MAX_FIELDS_PER_FORM:
+            logger.info(f"Limiting to {self.MAX_FIELDS_PER_FORM} fields (found {len(text_fields)})")
+        
+        logger.info(f"Testing form: {form_url} ({form.method}) with {len(fields_to_test)}/{len(text_fields)} field(s)")
+        
+        for input_field in fields_to_test:
             await self._test_form_field(form_url, form, input_field)
     
     async def _test_form_field(self, form_url: str, form, input_field: Dict) -> None:
@@ -222,7 +238,7 @@ class XSSAgent(BaseAgent):
             if not result_page:
                 return None
             
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.2)  # Short wait for JS (reduced from 0.5s)
             
             # Check HTTP status - reject if error (4xx, 5xx)
             # Note: Playwright doesn't expose status directly, check URL or content

@@ -23,11 +23,17 @@ class SQLiAgent(BaseAgent):
     NAME = "sqli_agent"
     VULN_TYPE = "sqli"
     
+    # Limits to prevent scan from taking too long
+    MAX_FORMS_PER_PAGE = 3      # Only test first 3 forms
+    MAX_FIELDS_PER_FORM = 4     # Only test first 4 text fields
+    MAX_PAYLOADS_PER_FIELD = 3  # Limit payloads (already optimized in payloads.py)
+    
     def __init__(self, coordinator=None):
         super().__init__(coordinator)
         self.crawler: Optional[BrowserCrawler] = None
         self.detector = SQLiDetector()
         self.browser: Optional[Browser] = None
+        self.forms_tested = 0     # Track forms tested per endpoint
     
     async def _setup(self):
         """Initialize browser and crawler"""
@@ -114,12 +120,16 @@ class SQLiAgent(BaseAgent):
                 logger.debug(f"Param test error: {e}")
     
     async def _test_page_forms(self, url: str) -> None:
-        """Test all forms on a page"""
+        """Test forms on a page (with limits)"""
         page_data = await self.crawler.crawl_page(url)
         if not page_data:
             return
         
-        for form in page_data.forms:
+        forms_to_test = page_data.forms[:self.MAX_FORMS_PER_PAGE]
+        if len(page_data.forms) > self.MAX_FORMS_PER_PAGE:
+            logger.info(f"Limiting to {self.MAX_FORMS_PER_PAGE} forms (found {len(page_data.forms)})")
+        
+        for form in forms_to_test:
             await self._test_form(url, form)
     
     async def _test_login_pages(self, base_url: str) -> None:
@@ -131,14 +141,22 @@ class SQLiAgent(BaseAgent):
             await self._test_page_forms(login_url)
     
     async def _test_form(self, base_url: str, form) -> None:
-        """Test a single form for SQLi"""
+        """Test a single form for SQLi (with field limits)"""
         from hunter.crawler.browser_crawler import FormData
         
         form_url = self._resolve_url(base_url, form.action) if form.action else base_url
         
-        logger.info(f"Testing form: {form_url} ({form.method}) with {len(form.inputs)} field(s)")
+        # Count text fields only
+        text_fields = [f for f in form.inputs 
+                      if f.get('type', 'text') in ['text', 'email', 'search', 'password', '']]
         
-        for input_field in form.inputs:
+        fields_to_test = text_fields[:self.MAX_FIELDS_PER_FORM]
+        if len(text_fields) > self.MAX_FIELDS_PER_FORM:
+            logger.info(f"Limiting to {self.MAX_FIELDS_PER_FORM} fields (found {len(text_fields)})")
+        
+        logger.info(f"Testing form: {form_url} ({form.method}) with {len(fields_to_test)}/{len(text_fields)} field(s)")
+        
+        for input_field in fields_to_test:
             await self._test_form_field(form_url, form, input_field)
     
     async def _test_form_field(self, form_url: str, form, input_field: Dict) -> None:
@@ -213,7 +231,7 @@ class SQLiAgent(BaseAgent):
             if not result_page:
                 return None
             
-            await asyncio.sleep(0.5)  # Wait for any JS
+            await asyncio.sleep(0.2)  # Short wait for JS (reduced from 0.5s)
             
             after_url = result_page.url
             content = await result_page.content()
