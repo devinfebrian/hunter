@@ -161,7 +161,7 @@ class SQLiAgent(BaseAgent):
             await self._test_form_field(form_url, form, input_field)
     
     async def _test_form_field(self, form_url: str, form, input_field: Dict) -> None:
-        """Test a single form field with various payloads"""
+        """Test a single form field - HTTP first (fast), browser only for auth bypass"""
         field_name = input_field['name']
         field_type = input_field.get('type', 'text')
         
@@ -173,43 +173,92 @@ class SQLiAgent(BaseAgent):
         if self._should_skip_param(form_url, field_name):
             return
         
-        # Choose payloads based on field type
-        is_password = field_type == 'password' or 'pass' in field_name.lower()
+        # Phase 1: HTTP-based testing (FAST - no browser)
+        # Test error-based payloads via HTTP POST
+        error_payloads = get_payloads("error_based")
+        logger.debug(f"Testing {field_name} with {len(error_payloads)} error-based payloads via HTTP")
         
-        if is_password:
-            payloads = get_payloads("auth_bypass") + get_payloads("error_based")
-        else:
-            payloads = get_payloads("error_based") + get_payloads("auth_bypass")
-        
-        login_failed_count = 0
-        for payload in payloads:
-            try:
-                result = await self._submit_and_check(form_url, form, input_field, payload)
-                
-                # If result is a Finding, we found a vulnerability
-                if isinstance(result, Finding):
-                    self._add_finding(result)
-                    return  # Found one, move to next field
-                
-                # If result is "LOGIN_FAILED", track it
-                if result == "LOGIN_FAILED":
-                    login_failed_count += 1
-                    # If 2 consecutive payloads show login failed, stop testing this field
-                    if login_failed_count >= 2:
-                        logger.debug(f"Login consistently failed for {field_name}, skipping remaining payloads")
-                        return
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10, verify=False) as client:
+            for payload in error_payloads:
+                try:
+                    finding = await self._test_form_field_http(client, form_url, form, input_field, payload)
+                    if finding:
+                        self._add_finding(finding)
+                        return  # Found SQL error, no need for auth bypass test
+                except Exception as e:
+                    logger.debug(f"HTTP test error for {field_name}: {e}")
                     continue
-                
-                # Reset counter on successful submission (no error, no failure message)
-                login_failed_count = 0
-                
-            except Exception as e:
-                logger.debug(f"Form test error for {field_name}: {e}")
-                continue
+        
+        # Phase 2: Browser-based testing (SLOW - only for auth bypass)
+        # Only test auth bypass payloads with browser (need JS/redirect detection)
+        is_password = field_type == 'password' or 'pass' in field_name.lower()
+        if is_password:
+            auth_payloads = get_payloads("auth_bypass")
+            logger.debug(f"Testing {field_name} with {len(auth_payloads)} auth bypass payloads via browser")
+            
+            login_failed_count = 0
+            for payload in auth_payloads:
+                try:
+                    result = await self._submit_and_check_browser(form_url, form, input_field, payload)
+                    
+                    if isinstance(result, Finding):
+                        self._add_finding(result)
+                        return
+                    
+                    if result == "LOGIN_FAILED":
+                        login_failed_count += 1
+                        if login_failed_count >= 2:
+                            logger.debug(f"Login consistently failed for {field_name}, skipping remaining auth payloads")
+                            return
+                    else:
+                        login_failed_count = 0
+                        
+                except Exception as e:
+                    logger.debug(f"Browser test error for {field_name}: {e}")
+                    continue
     
-    async def _submit_and_check(self, form_url: str, form, input_field: Dict, 
-                                payload: str) -> Optional[Finding]:
-        """Submit form with payload and check for vulnerabilities"""
+    async def _test_form_field_http(self, client: httpx.AsyncClient, form_url: str, 
+                                    form, input_field: Dict, payload: str) -> Optional[Finding]:
+        """Test form field via HTTP POST (FAST - no browser overhead)"""
+        field_name = input_field['name']
+        
+        try:
+            await self.rate_limiter.acquire()
+            
+            # Prepare form data
+            field_values = {field_name: payload}
+            for other in form.inputs:
+                if other['name'] != field_name:
+                    dummy = "password123" if other.get('type') == 'password' else "testuser"
+                    field_values[other['name']] = dummy
+            
+            # Submit via HTTP
+            if form.method.upper() == "POST":
+                response = await client.post(form_url, data=field_values)
+            else:
+                response = await client.get(form_url, params=field_values)
+            
+            # Check for SQL errors (fast text matching)
+            db_type, error_msg = self.detector.detect_sql_error(response.text)
+            if db_type:
+                logger.info(f"[FOUND] SQLi in field '{field_name}' - {db_type} (via HTTP)")
+                return self._create_finding(
+                    url=form_url,
+                    parameter=field_name,
+                    payload=payload,
+                    evidence=error_msg,
+                    db_type=db_type,
+                    method=form.method.upper()
+                )
+            
+        except Exception as e:
+            logger.debug(f"HTTP form test error for {field_name}: {e}")
+        
+        return None
+    
+    async def _submit_and_check_browser(self, form_url: str, form, input_field: Dict, 
+                                        payload: str) -> Optional[Finding]:
+        """Submit form with browser and check for auth bypass (SLOW - only for auth bypass)"""
         from playwright.async_api import Error as PlaywrightError
         
         field_name = input_field['name']
@@ -223,7 +272,6 @@ class SQLiAgent(BaseAgent):
             try:
                 await page.goto(form_url, wait_until="domcontentloaded", timeout=15000)
             except PlaywrightError as e:
-                # Handle navigation errors (ERR_ABORTED, timeout, etc.)
                 error_msg = str(e).lower()
                 if 'err_aborted' in error_msg or 'net::' in error_msg:
                     logger.debug(f"Navigation aborted for {form_url}: {e}")
@@ -233,8 +281,6 @@ class SQLiAgent(BaseAgent):
             
             # Prepare field values
             field_values = {field_name: payload}
-            
-            # Fill other fields with dummy data
             for other in form.inputs:
                 if other['name'] != field_name:
                     dummy = "password123" if other.get('type') == 'password' else "testuser"
@@ -243,53 +289,39 @@ class SQLiAgent(BaseAgent):
             # Capture before state
             before_url = page.url
             
-            # Submit form
+            # Submit form via browser
             result_page = await self.crawler.submit_form(page, form, field_values)
             if not result_page:
                 return None
             
-            await asyncio.sleep(0.2)  # Short wait for JS (reduced from 0.5s)
+            await asyncio.sleep(0.2)
             
             after_url = result_page.url
             content = await result_page.content()
             
-            # Check 1: Authentication bypass (PRIORITY - higher severity)
-            if is_auth_bypass_payload(payload):
-                is_auth_success = await self.detector.detect_auth_success(
-                    result_page, before_url, after_url
-                )
-                if is_auth_success:
-                    logger.info(f"[FOUND] Auth bypass in field '{field_name}'")
-                    return self._create_finding(
-                        url=form_url,
-                        parameter=field_name,
-                        payload=payload,
-                        evidence=f"Authentication bypass successful! Redirected from {before_url} to {after_url}",
-                        db_type="auth_bypass",
-                        method=form.method.upper(),
-                        is_auth_bypass=True
-                    )
-            
-            # Check 2: SQL errors in response
-            db_type, error_msg = self.detector.detect_sql_error(content)
-            if db_type:
-                logger.info(f"[FOUND] SQLi in field '{field_name}' - {db_type}")
+            # Check 1: Authentication bypass (only check we need browser for)
+            is_auth_success = await self.detector.detect_auth_success(
+                result_page, before_url, after_url
+            )
+            if is_auth_success:
+                logger.info(f"[FOUND] Auth bypass in field '{field_name}'")
                 return self._create_finding(
                     url=form_url,
                     parameter=field_name,
                     payload=payload,
-                    evidence=error_msg,
-                    db_type=db_type,
-                    method=form.method.upper()
+                    evidence=f"Authentication bypass successful! Redirected from {before_url} to {after_url}",
+                    db_type="auth_bypass",
+                    method=form.method.upper(),
+                    is_auth_bypass=True
                 )
             
-            # Check 3: Login failure detection - stop testing if auth clearly failed
+            # Check 2: Login failure detection
             if self.detector.detect_login_failure(content):
                 logger.debug(f"Login failed for {field_name} with payload '{payload[:30]}...'")
                 return "LOGIN_FAILED"
             
         except Exception as e:
-            logger.debug(f"Form test error for '{field_name}': {e}")
+            logger.debug(f"Browser form test error for '{field_name}': {e}")
         finally:
             if page:
                 try:

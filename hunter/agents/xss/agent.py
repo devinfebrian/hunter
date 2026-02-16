@@ -174,7 +174,7 @@ class XSSAgent(BaseAgent):
             await self._test_form_field(form_url, form, input_field)
     
     async def _test_form_field(self, form_url: str, form, input_field: Dict) -> None:
-        """Test a single form field with XSS payloads"""
+        """Test a single form field - HTTP first for reflection, browser for confirmation"""
         field_name = input_field['name']
         field_type = input_field.get('type', 'text')
         
@@ -182,28 +182,86 @@ class XSSAgent(BaseAgent):
         if field_type not in ['text', 'email', 'search', 'password', 'textarea', '']:
             return
         
-        # Skip if already tested by another agent (e.g., SQLi found it first)
+        # Skip if already tested by another agent
         if self._should_skip_param(form_url, field_name):
             return
         
-        # Get payloads - use diverse set for forms
-        payloads = (get_payloads("basic") + 
-                   get_payloads("img") + 
-                   get_payloads("event_handlers"))
+        # Phase 1: HTTP-based reflection check (FAST)
+        # Use simple payloads first via HTTP
+        simple_payloads = get_payloads("basic")[:3]  # Just first 3 basic payloads
+        logger.debug(f"Testing {field_name} with {len(simple_payloads)} payloads via HTTP")
         
-        for payload in payloads:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10, verify=False) as client:
+            for payload in simple_payloads:
+                try:
+                    is_reflected = await self._check_reflection_http(client, form_url, form, input_field, payload)
+                    if is_reflected:
+                        logger.info(f"[FOUND] XSS reflection in field '{field_name}' (HTTP)")
+                        finding = self._create_finding(
+                            url=form_url,
+                            parameter=field_name,
+                            payload=payload,
+                            context="html",
+                            evidence=f"Payload reflected in response: {payload}",
+                            method=form.method.upper(),
+                            xss_type="Reflected" if form.method.upper() == "GET" else "Stored"
+                        )
+                        self._add_finding(finding)
+                        return
+                except Exception as e:
+                    logger.debug(f"HTTP reflection check error for {field_name}: {e}")
+                    continue
+        
+        # Phase 2: If HTTP didn't find anything, try browser with full payloads
+        # (some XSS only works with JS execution which requires browser)
+        logger.debug(f"HTTP check negative for {field_name}, trying browser with full payloads")
+        full_payloads = get_payloads("basic") + get_payloads("img") + get_payloads("event_handlers")
+        
+        for payload in full_payloads:
             try:
-                finding = await self._submit_and_check(form_url, form, input_field, payload)
+                finding = await self._submit_and_check_browser(form_url, form, input_field, payload)
                 if finding:
                     self._add_finding(finding)
                     return
             except Exception as e:
-                logger.debug(f"Form test error for {field_name}: {e}")
+                logger.debug(f"Browser test error for {field_name}: {e}")
                 continue
     
-    async def _submit_and_check(self, form_url: str, form, input_field: Dict,
-                                payload: str) -> Optional[Finding]:
-        """Submit form with payload and check for XSS"""
+    async def _check_reflection_http(self, client: httpx.AsyncClient, form_url: str,
+                                     form, input_field: Dict, payload: str) -> bool:
+        """Check if payload is reflected in response via HTTP (FAST)"""
+        field_name = input_field['name']
+        
+        try:
+            await self.rate_limiter.acquire()
+            
+            # Prepare form data
+            field_values = {field_name: payload}
+            for other in form.inputs:
+                if other['name'] != field_name:
+                    dummy = "test@example.com" if other.get('type') == 'email' else "testuser"
+                    field_values[other['name']] = dummy
+            
+            # Submit via HTTP
+            if form.method.upper() == "POST":
+                response = await client.post(form_url, data=field_values)
+            else:
+                response = await client.get(form_url, params=field_values)
+            
+            # Quick check: is payload in response?
+            if payload in response.text:
+                # More detailed analysis
+                analysis = self.analyzer.analyze(response.text, payload)
+                return analysis['reflected'] and not analysis['properly_encoded']
+            
+        except Exception as e:
+            logger.debug(f"HTTP reflection check error for {field_name}: {e}")
+        
+        return False
+    
+    async def _submit_and_check_browser(self, form_url: str, form, input_field: Dict,
+                                        payload: str) -> Optional[Finding]:
+        """Submit form with browser and check for XSS (SLOW - full analysis)"""
         from playwright.async_api import Error as PlaywrightError
         
         field_name = input_field['name']
@@ -213,11 +271,10 @@ class XSSAgent(BaseAgent):
             page = await self.browser.new_page()
             await self.rate_limiter.acquire()
             
-            # Load fresh page (navigate to form page) - use shorter timeout
+            # Load fresh page (navigate to form page)
             try:
                 await page.goto(form_url, wait_until="domcontentloaded", timeout=15000)
             except PlaywrightError as e:
-                # Handle navigation errors (ERR_ABORTED, timeout, etc.)
                 error_msg = str(e).lower()
                 if 'err_aborted' in error_msg or 'net::' in error_msg:
                     logger.debug(f"Navigation aborted for {form_url}: {e}")
@@ -234,21 +291,17 @@ class XSSAgent(BaseAgent):
                     dummy = "test@example.com" if other.get('type') == 'email' else "testuser"
                     field_values[other['name']] = dummy
             
-            # Submit form and capture response
+            # Submit form via browser
             result_page = await self.crawler.submit_form(page, form, field_values)
             if not result_page:
                 return None
             
-            await asyncio.sleep(0.2)  # Short wait for JS (reduced from 0.5s)
+            await asyncio.sleep(0.2)
             
-            # Check HTTP status - reject if error (4xx, 5xx)
-            # Note: Playwright doesn't expose status directly, check URL or content
-            current_url = result_page.url
-            
-            # If still on same URL with error message, form submission failed
+            # Get content and analyze
             content = await result_page.content()
             
-            # Check for common error indicators
+            # Check for error indicators
             error_indicators = ['405', 'method not allowed', 'error', 'failed', 'not supported']
             has_error = any(ind in content.lower() for ind in error_indicators)
             
@@ -260,12 +313,10 @@ class XSSAgent(BaseAgent):
             analysis = self.analyzer.analyze(content, payload)
             
             if analysis['reflected'] and not analysis['properly_encoded']:
-                # Determine XSS type
                 xss_type = "Stored" if form.method.lower() == "post" else "Reflected"
                 
-                logger.info(f"[FOUND] {xss_type} XSS in field '{field_name}'")
+                logger.info(f"[FOUND] {xss_type} XSS in field '{field_name}' (browser)")
                 
-                # Build better evidence with full payload context
                 evidence = self._build_evidence(content, payload, analysis)
                 
                 return self._create_finding(
@@ -279,7 +330,7 @@ class XSSAgent(BaseAgent):
                 )
             
         except Exception as e:
-            logger.debug(f"Form test error for '{field_name}': {e}")
+            logger.debug(f"Browser test error for '{field_name}': {e}")
         finally:
             if page:
                 try:
